@@ -14,6 +14,7 @@ class JokeNfcApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
+        fontFamily: 'MojFont'
       ),
       home: const JokeHomePage(),
     );
@@ -231,7 +232,7 @@ class _JokeHomePageState extends State<JokeHomePage> {
           width: double.infinity,
           child: Text(
             _jokeDisplay,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
             textAlign: TextAlign.center,
           ),
         ),
