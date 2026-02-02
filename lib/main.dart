@@ -28,86 +28,13 @@ class JokeHomePage extends StatefulWidget {
 }
 
 class _JokeHomePageState extends State<JokeHomePage> {
-  String _jokeDisplay = "Enclose phone to the device...";
+  String _jokeDisplay = "Place phone near the device...";
   final TextEditingController _controller = TextEditingController();
   bool _isScanning = false;
   Timer? _nfcTimer;
 
+  // --- 10 SECOND TIMEOUT ---
   void _startTimeout() {
-    _nfcTimer?.cancel();
-    _nfcTimer = Timer(const Duration(seconds: 10), () {
-      if (_isScanning) {
-        NfcManager.instance.stopSession();
-        setState(() {
-          _isScanning = false;
-          _jokeDisplay = "Timed out. Try again.";
-        });
-      }
-    });
-  }
-
-  // --- READ FUNCTION ---
-  void _readJoke() async {
-    // 1. Kontrola, či je NFC zapnuté v mobile
-    bool isAvailable = await NfcManager.instance.isAvailable();
-    if (!isAvailable) {
-      _updateStatus("Error: Turn on NFC in the phone 1!");
-      return;
-    }
-
-    setState(() {
-      _isScanning = true;
-      _jokeDisplay = "Looking for device... Enclose phone.";
-    });
-
-    _startTimeout();
-
-    NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
-      _nfcTimer?.cancel();
-      try {
-        var ndef = Ndef.from(tag);
-        if (ndef == null) {
-          _updateStatus("Error: This is not a joke (invalid format).");
-          return;
-        }
-
-        NdefMessage message = await ndef.read();
-        if (message.records.isEmpty) {
-          _updateStatus("Device is empty, no joke.");
-        } else {
-          String joke = String.fromCharCodes(message.records.first.payload).substring(3);
-          _updateStatus("Received joke: $joke");
-        }
-      } catch (e) {
-        _updateStatus("Error downloading joke.");
-      } finally {
-        NfcManager.instance.stopSession();
-        if (mounted) setState(() => _isScanning = false);
-      }
-    });
-  }
-
-  // --- WRITE FUNCTION ---
-  void _sendJoke() async {
-    // 1. TEXT CONTROL
-    if (_controller.text.trim().isEmpty) {
-      setState(() => _jokeDisplay = "ERROR: Write text!");
-      return;
-    }
-
-    // 2. HARDWARE CONTROL
-    bool isAvailable = await NfcManager.instance.isAvailable();
-    if (!isAvailable) {
-      setState(() => _jokeDisplay = "ERROR: Turn on NFC in the phone!");
-      return;
-    }
-
-    // 3. STEP "WRITING"
-    setState(() {
-      _isScanning = true;
-      _jokeDisplay = "READY: Enclose phone to STM32...";
-    });
-
     _nfcTimer?.cancel();
     _nfcTimer = Timer(const Duration(seconds: 10), () async {
       if (_isScanning) {
@@ -115,39 +42,115 @@ class _JokeHomePageState extends State<JokeHomePage> {
         if (mounted) {
           setState(() {
             _isScanning = false;
-            _jokeDisplay = "TIMED OUT: Device not found.";
+            _jokeDisplay = "Timed out. Please try again.";
           });
         }
       }
     });
+  }
 
-    // 4. Turn on NFC
+  // --- READ FUNCTION (GET_JOKE) ---
+  void _readJoke() async {
+    // Check if NFC is enabled on the phone hardware
+    bool isAvailable = await NfcManager.instance.isAvailable();
+    if (!isAvailable) {
+      _updateStatus("ERROR: Please enable NFC in settings!");
+      return;
+    }
+
+    setState(() {
+      _isScanning = true;
+      _jokeDisplay = "Sending request GET_JOKE...";
+    });
+
+    _startTimeout();
+
+    NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
+      try {
+        var ndef = Ndef.from(tag);
+        if (ndef == null || !ndef.isWritable) {
+          _updateStatus("ERROR: Incompatible NFC tag.");
+          return;
+        }
+
+        // STEP 1: Write "GET_JOKE"
+        await ndef.write(NdefMessage([NdefRecord.createText("GET_JOKE")]));
+        _updateStatus("Request sent. Waiting for response...");
+
+        // STEP 2: Wait for STM32 processing
+        await Future.delayed(const Duration(milliseconds: 600));
+
+        // STEP 3: Read response
+        NdefMessage response = await ndef.read();
+        if (response.records.isEmpty) {
+          _updateStatus("Device returned no data.");
+        } else {
+          String rawText = String.fromCharCodes(response.records.first.payload).substring(3);
+
+          if (rawText == "INVALID REQUEST") {
+            _updateStatus("ERROR: STM32 rejected the command.");
+          } else {
+            _updateStatus(rawText);
+          }
+        }
+        _nfcTimer?.cancel();
+      } catch (e) {
+        _updateStatus("Error in communication.");
+      } finally {
+        NfcManager.instance.stopSession();
+        if (mounted) setState(() => _isScanning = false);
+      }
+    });
+  }
+
+  // --- WRITE FUNCTION (ADD_JOKE) ---
+  void _sendJoke() async {
+    if (_controller.text.trim().isEmpty) {
+      _updateStatus("Write a joke first!");
+      return;
+    }
+
+    bool isAvailable = await NfcManager.instance.isAvailable();
+    if (!isAvailable) {
+      _updateStatus("ERROR: NFC is disabled!");
+      return;
+    }
+
+    setState(() {
+      _isScanning = true;
+      _jokeDisplay = "Saving joke to database...";
+    });
+
+    _startTimeout();
+
     NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
       if (!_isScanning) return;
-
-      _nfcTimer?.cancel();
-
-      setState(() => _jokeDisplay = "DEVICE FOUND: Writing data...");
 
       try {
         var ndef = Ndef.from(tag);
         if (ndef == null || !ndef.isWritable) {
-          _updateStatus("ERROR: This chip does not support write.");
-        } else {
-          await ndef.write(NdefMessage([NdefRecord.createText(_controller.text)]));
-          _updateStatus("DONE: Joke sent successfully!");
-          _controller.clear();
+          _updateStatus("ERROR: Tag is not writable.");
+          return;
         }
+
+        String formattedJoke = "ADD_JOKE:${_controller.text.trim()}";
+
+        await ndef.write(NdefMessage([NdefRecord.createText(formattedJoke)]));
+        _nfcTimer?.cancel();
+
+        // Check for "ADD_JOKE request received" confirmation
+        await Future.delayed(const Duration(milliseconds: 500));
+        NdefMessage confirm = await ndef.read();
+        String result = String.fromCharCodes(confirm.records.first.payload).substring(3);
+
+        _updateStatus(result);
+        _controller.clear();
       } catch (e) {
-        _updateStatus("ERROR: Write failed. Try again.");
+        _updateStatus("Write failed. Check connection.");
       } finally {
-        await NfcManager.instance.stopSession();
+        NfcManager.instance.stopSession();
         if (mounted) setState(() => _isScanning = false);
       }
-    }, onError: (error) async {
-      _nfcTimer?.cancel();
-      _updateStatus("NFC ERROR: $error");
-      if (mounted) setState(() => _isScanning = false);
     });
   }
 
@@ -196,6 +199,7 @@ class _JokeHomePageState extends State<JokeHomePage> {
                     TextField(
                       controller: _controller,
                       maxLines: 5,
+                      maxLength: 200,
                       decoration: InputDecoration(
                         hintText: "Write your joke here...",
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
@@ -218,14 +222,18 @@ class _JokeHomePageState extends State<JokeHomePage> {
   Widget _buildStatusCard() {
     return Card(
       elevation: 4,
+      // Using your requested Teal/Blue color logic
       color: _isScanning ? Colors.teal[50] : Colors.blue[100],
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Padding(
         padding: const EdgeInsets.all(25.0),
         child: SizedBox(
           width: double.infinity,
-          child: Text(_jokeDisplay,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500), textAlign: TextAlign.center),
+          child: Text(
+            _jokeDisplay,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+            textAlign: TextAlign.center,
+          ),
         ),
       ),
     );
@@ -242,7 +250,6 @@ class _JokeHomePageState extends State<JokeHomePage> {
         minimumSize: const Size(double.infinity, 55),
         foregroundColor: Colors.white,
         backgroundColor: Colors.blue[900],
-
       ),
     );
   }
