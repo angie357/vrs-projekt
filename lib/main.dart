@@ -12,7 +12,7 @@ class JokeNfcApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
       home: const JokeHomePage(),
@@ -28,7 +28,7 @@ class JokeHomePage extends StatefulWidget {
 }
 
 class _JokeHomePageState extends State<JokeHomePage> {
-  String _jokeDisplay = "Prilož mobil k zariadeniu...";
+  String _jokeDisplay = "Enclose phone to the device...";
   final TextEditingController _controller = TextEditingController();
   bool _isScanning = false;
   Timer? _nfcTimer;
@@ -40,104 +40,117 @@ class _JokeHomePageState extends State<JokeHomePage> {
         NfcManager.instance.stopSession();
         setState(() {
           _isScanning = false;
-          _jokeDisplay = "Čas vypršal. Skús to znova.";
+          _jokeDisplay = "Timed out. Try again.";
         });
       }
     });
   }
 
+  // --- READ FUNCTION ---
   void _readJoke() async {
-    setState(() => _isScanning = true);
+    // 1. Kontrola, či je NFC zapnuté v mobile
+    bool isAvailable = await NfcManager.instance.isAvailable();
+    if (!isAvailable) {
+      _updateStatus("Error: Turn on NFC in the phone 1!");
+      return;
+    }
+
+    setState(() {
+      _isScanning = true;
+      _jokeDisplay = "Looking for device... Enclose phone.";
+    });
+
     _startTimeout();
+
     NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
       _nfcTimer?.cancel();
       try {
         var ndef = Ndef.from(tag);
-        if (ndef == null) return;
+        if (ndef == null) {
+          _updateStatus("Error: This is not a joke (invalid format).");
+          return;
+        }
+
         NdefMessage message = await ndef.read();
-        String joke = String.fromCharCodes(message.records.first.payload).substring(3);
-        setState(() => _jokeDisplay = joke);
+        if (message.records.isEmpty) {
+          _updateStatus("Device is empty, no joke.");
+        } else {
+          String joke = String.fromCharCodes(message.records.first.payload).substring(3);
+          _updateStatus("Received joke: $joke");
+        }
       } catch (e) {
-        setState(() => _jokeDisplay = "Chyba čítania.");
+        _updateStatus("Error downloading joke.");
       } finally {
         NfcManager.instance.stopSession();
-        setState(() => _isScanning = false);
+        if (mounted) setState(() => _isScanning = false);
       }
     });
   }
 
+  // --- WRITE FUNCTION ---
   void _sendJoke() async {
-    if (_controller.text.isEmpty) return;
+    // 1. TEXT CONTROL
+    if (_controller.text.trim().isEmpty) {
+      setState(() => _jokeDisplay = "ERROR: Write text!");
+      return;
+    }
 
-    // 1. Príprava stavu
+    // 2. HARDWARE CONTROL
+    bool isAvailable = await NfcManager.instance.isAvailable();
+    if (!isAvailable) {
+      setState(() => _jokeDisplay = "ERROR: Turn on NFC in the phone!");
+      return;
+    }
+
+    // 3. STEP "WRITING"
     setState(() {
       _isScanning = true;
-      _jokeDisplay = "Prilož mobil k zariadeniu pre zápis...";
+      _jokeDisplay = "READY: Enclose phone to STM32...";
     });
 
-    // 2. Nastavenie časovača
     _nfcTimer?.cancel();
     _nfcTimer = Timer(const Duration(seconds: 10), () async {
       if (_isScanning) {
-        // Force stop - dôležité poradie
         await NfcManager.instance.stopSession();
         if (mounted) {
           setState(() {
             _isScanning = false;
-            _jokeDisplay = "Čas na zápis vypršal. Skús to znova.";
+            _jokeDisplay = "TIMED OUT: Device not found.";
           });
         }
       }
     });
 
-    // 3. Spustenie NFC relácie
-    try {
-      await NfcManager.instance.startSession(
-        // Nastavíme polling options, aby sme znížili latenciu (len pre Android, iOS ignoruje)
-        pollingOptions: {NfcPollingOption.iso14443, NfcPollingOption.iso15693},
-        onDiscovered: (NfcTag tag) async {
-          // OKAMŽITÁ KONTROLA: Ak už časovač vybehol, nič nerob
-          if (!_isScanning) return;
+    // 4. Turn on NFC
+    NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
+      if (!_isScanning) return;
 
-          _nfcTimer?.cancel(); // Tag sme našli, zruš odpočet
-
-          try {
-            var ndef = Ndef.from(tag);
-            if (ndef == null || !ndef.isWritable) {
-              _updateStatus("Chyba: Tag nepodporuje zápis.");
-              await NfcManager.instance.stopSession(errorMessage: "Nevhodný tag.");
-              return;
-            }
-
-            // Samotný zápis
-            NdefMessage message = NdefMessage([NdefRecord.createText(_controller.text)]);
-            await ndef.write(message);
-
-            _updateStatus("Vtip bol úspešne nahraný!");
-            _controller.clear();
-            await NfcManager.instance.stopSession(); // Úspešné ukončenie
-
-          } catch (e) {
-            _updateStatus("Chyba počas zápisu: $e");
-            await NfcManager.instance.stopSession(errorMessage: "Zápis zlyhal.");
-          } finally {
-            if (mounted) setState(() => _isScanning = false);
-          }
-        },
-        onError: (error) async {
-          _nfcTimer?.cancel();
-          _updateStatus("NFC Chyba: $error");
-          if (mounted) setState(() => _isScanning = false);
-        },
-      );
-    } catch (e) {
       _nfcTimer?.cancel();
-      _updateStatus("Nepodarilo sa spustiť NFC.");
-      setState(() => _isScanning = false);
-    }
+
+      setState(() => _jokeDisplay = "DEVICE FOUND: Writing data...");
+
+      try {
+        var ndef = Ndef.from(tag);
+        if (ndef == null || !ndef.isWritable) {
+          _updateStatus("ERROR: This chip does not support write.");
+        } else {
+          await ndef.write(NdefMessage([NdefRecord.createText(_controller.text)]));
+          _updateStatus("DONE: Joke sent successfully!");
+          _controller.clear();
+        }
+      } catch (e) {
+        _updateStatus("ERROR: Write failed. Try again.");
+      } finally {
+        await NfcManager.instance.stopSession();
+        if (mounted) setState(() => _isScanning = false);
+      }
+    }, onError: (error) async {
+      _nfcTimer?.cancel();
+      _updateStatus("NFC ERROR: $error");
+      if (mounted) setState(() => _isScanning = false);
+    });
   }
 
-  // Pomocná funkcia na update textu bezpečným spôsobom
   void _updateStatus(String text) {
     if (mounted) {
       setState(() => _jokeDisplay = text);
@@ -153,68 +166,98 @@ class _JokeHomePageState extends State<JokeHomePage> {
           title: const Text('NFC Joke Database'),
           bottom: const TabBar(
             tabs: [
-              Tab(icon: Icon(Icons.auto_awesome), text: "Získať vtip"),
-              Tab(icon: Icon(Icons.edit_note), text: "Nahrať vtip"),
+              Tab(icon: Icon(Icons.auto_awesome), text: "Read joke"),
+              Tab(icon: Icon(Icons.edit_note), text: "Write joke"),
             ],
           ),
         ),
         body: TabBarView(
           children: [
-            // --- ZÁLOŽKA 1: ČÍTANIE ---
+            // --- TAB 1: READ ---
             Padding(
               padding: const EdgeInsets.all(24.0),
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Card(
-                    elevation: 4,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                    child: Padding(
-                      padding: const EdgeInsets.all(30.0),
-                      child: Text(_jokeDisplay, style: const TextStyle(fontSize: 18), textAlign: TextAlign.center),
-                    ),
-                  ),
-                  const SizedBox(height: 40),
-                  ElevatedButton.icon(
-                    onPressed: _isScanning ? null : _readJoke,
-                    icon: _isScanning ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.nfc),
-                    label: Text(_isScanning ? "Hľadám zariadenie..." : "Načítať náhodný vtip"),
-                    style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 55)),
-                  ),
+                  _buildStatusCard(),
+                  const SizedBox(height: 20),
+                  _buildReadButton(),
                 ],
               ),
             ),
-            // --- ZÁLOŽKA 2: ZÁPIS ---
+
+            // --- TAB 2: WRITE ---
             Padding(
               padding: const EdgeInsets.all(24.0),
-              child: Column(
-                children: [
-                  TextField(
-                    controller: _controller,
-                    maxLines: 5,
-                    decoration: InputDecoration(
-                      hintText: "Sem napíš svoj vtip...",
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
-                      filled: true,
-                      fillColor: Colors.grey[100],
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    _buildStatusCard(),
+                    const SizedBox(height: 20),
+                    TextField(
+                      controller: _controller,
+                      maxLines: 5,
+                      decoration: InputDecoration(
+                        hintText: "Write your joke here...",
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
+                        filled: true,
+                        fillColor: Colors.grey[100],
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 20),
-                  ElevatedButton.icon(
-                    onPressed: _isScanning ? null : _sendJoke,
-                    icon: const Icon(Icons.send),
-                    label: const Text("Nahrať cez NFC"),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.deepPurple,
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size(double.infinity, 55),
-                    ),
-                  ),
-                ],
+                    const SizedBox(height: 20),
+                    _buildWriteButton(),
+                  ],
+                ),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildStatusCard() {
+    return Card(
+      elevation: 4,
+      color: _isScanning ? Colors.teal[50] : Colors.blue[100],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(25.0),
+        child: SizedBox(
+          width: double.infinity,
+          child: Text(_jokeDisplay,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500), textAlign: TextAlign.center),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReadButton() {
+    return ElevatedButton.icon(
+      onPressed: _isScanning ? null : _readJoke,
+      icon: _isScanning
+          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+          : const Icon(Icons.download),
+      label: Text(_isScanning ? "Looking for joke..." : "Read random joke"),
+      style: ElevatedButton.styleFrom(
+        minimumSize: const Size(double.infinity, 55),
+        foregroundColor: Colors.white,
+        backgroundColor: Colors.blue[900],
+
+      ),
+    );
+  }
+
+  Widget _buildWriteButton() {
+    return ElevatedButton.icon(
+      onPressed: _isScanning ? null : _sendJoke,
+      icon: _isScanning
+          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+          : const Icon(Icons.upload),
+      label: Text(_isScanning ? "Writing..." : "Write through NFC"),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.blue[900],
+        foregroundColor: Colors.white,
+        minimumSize: const Size(double.infinity, 55),
       ),
     );
   }
