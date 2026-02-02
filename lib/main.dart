@@ -12,10 +12,7 @@ class JokeNfcApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
-        fontFamily: 'MojFont'
-      ),
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue), useMaterial3: true, fontFamily: 'MojFont'),
       home: const JokeHomePage(),
     );
   }
@@ -29,12 +26,24 @@ class JokeHomePage extends StatefulWidget {
 }
 
 class _JokeHomePageState extends State<JokeHomePage> {
-  String _jokeDisplay = "Place phone near the device...";
+  String _statusDisplay = "Place phone near the device...";
   final TextEditingController _controller = TextEditingController();
   bool _isScanning = false;
   Timer? _nfcTimer;
+  int _readStep = 1; // 1 = Send Request, 2 = Read Joke
 
-  // --- 10 SECOND TIMEOUT ---
+  // Debug Log list
+  List<String> _debugLogs = [];
+
+  void _addLog(String message) {
+    if (mounted) {
+      setState(() {
+        _debugLogs.insert(0, "${DateTime.now().second}s: $message");
+        if (_debugLogs.length > 5) _debugLogs.removeLast();
+      });
+    }
+  }
+
   void _startTimeout() {
     _nfcTimer?.cancel();
     _nfcTimer = Timer(const Duration(seconds: 10), () async {
@@ -43,7 +52,8 @@ class _JokeHomePageState extends State<JokeHomePage> {
         if (mounted) {
           setState(() {
             _isScanning = false;
-            _jokeDisplay = "Timed out. Please try again.";
+            _statusDisplay = "Timed out. Please try again.";
+            _addLog("TIMEOUT: No device found.");
           });
         }
       }
@@ -52,75 +62,110 @@ class _JokeHomePageState extends State<JokeHomePage> {
 
   // --- READ FUNCTION (GET_JOKE) ---
   void _readJoke() async {
-    // Check if NFC is enabled on the phone hardware
     bool isAvailable = await NfcManager.instance.isAvailable();
     if (!isAvailable) {
-      _updateStatus("ERROR: Please enable NFC in settings!");
+      _updateStatus("ERROR: Enable NFC!");
       return;
     }
 
-    setState(() {
-      _isScanning = true;
-      _jokeDisplay = "Sending request GET_JOKE...";
-    });
+    if (_readStep == 1) {
+      // --- KROK 1: ODOSLANIE POŽIADAVKY ---
+      setState(() {
+        _isScanning = true;
+        _statusDisplay = "Step 1: Sending GET_JOKE...";
+      });
+      _addLog("Sending GET_JOKE trigger...");
 
-    _startTimeout();
+      _startTimeout();
 
-    NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
-      try {
-        var ndef = Ndef.from(tag);
-        if (ndef == null || !ndef.isWritable) {
-          _updateStatus("ERROR: Incompatible NFC tag.");
-          return;
-        }
+      NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
+        try {
+          var ndef = Ndef.from(tag);
+          if (ndef == null) return;
 
-        // STEP 1: Write "GET_JOKE"
-        await ndef.write(NdefMessage([NdefRecord.createText("GET_JOKE")]));
-        _updateStatus("Request sent. Waiting for response...");
+          await ndef.write(NdefMessage([NdefRecord.createText("GET_JOKE")]));
 
-        // STEP 2: Wait for STM32 processing
-        await Future.delayed(const Duration(milliseconds: 600));
+          _nfcTimer?.cancel();
+          _addLog("Request sent! Press physical button on STM32.");
 
-        // STEP 3: Read response
-        NdefMessage response = await ndef.read();
-        if (response.records.isEmpty) {
-          _updateStatus("Device returned no data.");
-        } else {
-          String rawText = String.fromCharCodes(response.records.first.payload).substring(3);
-
-          if (rawText == "INVALID REQUEST") {
-            _updateStatus("ERROR: STM32 rejected the command.");
-          } else {
-            _updateStatus(rawText);
+          if (mounted) {
+            setState(() {
+              _readStep = 2; // Zmena na druhý krok
+              _statusDisplay = "Step 1 Done! Now press physical button, then tap '2. Read Joke'";
+            });
           }
+        } catch (e) {
+          _addLog("ERR: $e");
+          _updateStatus("Send failed.");
+        } finally {
+          NfcManager.instance.stopSession();
+          if (mounted) setState(() => _isScanning = false);
         }
-        _nfcTimer?.cancel();
-      } catch (e) {
-        _updateStatus("Error in communication.");
-      } finally {
-        NfcManager.instance.stopSession();
-        if (mounted) setState(() => _isScanning = false);
-      }
-    });
+      });
+    } else {
+      // --- KROK 2: ČÍTANIE VTIPU ---
+      setState(() {
+        _isScanning = true;
+        _statusDisplay = "Step 2: Reading joke...";
+      });
+      _addLog("Attempting to read joke...");
+
+      _startTimeout();
+
+      NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
+        try {
+          var ndef = Ndef.from(tag);
+          if (ndef == null) return;
+
+          NdefMessage response = await ndef.read();
+          if (response.records.isEmpty) {
+            _addLog("Tag is empty.");
+          } else {
+            String rawText = String.fromCharCodes(response.records.first.payload).substring(3);
+            _addLog("Received: $rawText");
+            _updateStatus(rawText);
+
+            if (mounted) {
+              setState(() {
+                _readStep = 1; // Reset späť na prvý krok po úspešnom prečítaní
+              });
+            }
+          }
+          _nfcTimer?.cancel();
+        } catch (e) {
+          _addLog("Read ERR: $e");
+          _updateStatus("Read failed. Is the joke ready?");
+        } finally {
+          NfcManager.instance.stopSession();
+          if (mounted) setState(() => _isScanning = false);
+        }
+      });
+    }
   }
 
   // --- WRITE FUNCTION (ADD_JOKE) ---
   void _sendJoke() async {
+    // 1. Check if user entered text
     if (_controller.text.trim().isEmpty) {
       _updateStatus("Write a joke first!");
+      _addLog("ERROR: Empty text field.");
       return;
     }
 
+    // 2. NEW: Check if NFC hardware is actually ON
     bool isAvailable = await NfcManager.instance.isAvailable();
     if (!isAvailable) {
-      _updateStatus("ERROR: NFC is disabled!");
+      _updateStatus("ERROR: Please enable NFC in settings!");
+      _addLog("ERROR: NFC hardware is OFF.");
       return;
     }
 
     setState(() {
       _isScanning = true;
-      _jokeDisplay = "Saving joke to database...";
+      _statusDisplay = "Uploading joke... Tap device.";
+      _debugLogs.clear();
     });
+    _addLog("Starting Write Session...");
 
     _startTimeout();
 
@@ -130,24 +175,31 @@ class _JokeHomePageState extends State<JokeHomePage> {
       try {
         var ndef = Ndef.from(tag);
         if (ndef == null || !ndef.isWritable) {
-          _updateStatus("ERROR: Tag is not writable.");
+          _addLog("ERROR: Tag not writable.");
+          _updateStatus("ERROR: Incompatible tag.");
           return;
         }
 
+        // Apply the prefix Rado's C code expects
         String formattedJoke = "ADD_JOKE:${_controller.text.trim()}";
+        _addLog("Writing: $formattedJoke");
 
         await ndef.write(NdefMessage([NdefRecord.createText(formattedJoke)]));
         _nfcTimer?.cancel();
+        _addLog("Write successful. Waiting for STM32...");
 
-        // Check for "ADD_JOKE request received" confirmation
-        await Future.delayed(const Duration(milliseconds: 500));
+        // Give STM32 time to update the response
+        await Future.delayed(const Duration(milliseconds: 600));
+
         NdefMessage confirm = await ndef.read();
         String result = String.fromCharCodes(confirm.records.first.payload).substring(3);
 
+        _addLog("STM32 Response: $result");
         _updateStatus(result);
         _controller.clear();
       } catch (e) {
-        _updateStatus("Write failed. Check connection.");
+        _updateStatus("Write failed.");
+        _addLog("ERR: $e");
       } finally {
         NfcManager.instance.stopSession();
         if (mounted) setState(() => _isScanning = false);
@@ -156,9 +208,7 @@ class _JokeHomePageState extends State<JokeHomePage> {
   }
 
   void _updateStatus(String text) {
-    if (mounted) {
-      setState(() => _jokeDisplay = text);
-    }
+    if (mounted) setState(() => _statusDisplay = text);
   }
 
   @override
@@ -170,103 +220,127 @@ class _JokeHomePageState extends State<JokeHomePage> {
           title: const Text('NFC Joke Database'),
           bottom: const TabBar(
             tabs: [
-              Tab(icon: Icon(Icons.auto_awesome), text: "Read joke"),
-              Tab(icon: Icon(Icons.edit_note), text: "Write joke"),
+              Tab(icon: Icon(Icons.auto_awesome), text: "Read"),
+              Tab(icon: Icon(Icons.edit_note), text: "Write"),
             ],
           ),
         ),
-        body: TabBarView(
+        body: Column(
           children: [
-            // --- TAB 1: READ ---
-            Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
+            Expanded(
+              child: TabBarView(
                 children: [
-                  _buildStatusCard(),
-                  const SizedBox(height: 20),
-                  _buildReadButton(),
+                  // TAB 1
+                  _buildTabContent(_buildStatusCard(), _buildReadButton()),
+                  // TAB 2
+                  _buildTabContent(_buildStatusCard(), _buildWriteSection()),
                 ],
               ),
             ),
-
-            // --- TAB 2: WRITE ---
-            Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: SingleChildScrollView(
-                child: Column(
-                  children: [
-                    _buildStatusCard(),
-                    const SizedBox(height: 20),
-                    TextField(
-                      controller: _controller,
-                      maxLines: 5,
-                      maxLength: 200,
-                      decoration: InputDecoration(
-                        hintText: "Write your joke here...",
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
-                        filled: true,
-                        fillColor: Colors.grey[100],
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    _buildWriteButton(),
-                  ],
-                ),
-              ),
-            ),
+            _buildDebugPanel(), // Spoločný log panel na spodku
           ],
         ),
       ),
     );
   }
 
+  Widget _buildTabContent(Widget top, Widget bottom) {
+    return Padding(
+      padding: const EdgeInsets.all(20.0),
+      child: Column(children: [top, const SizedBox(height: 20), bottom]),
+    );
+  }
+
+  Widget _buildWriteSection() {
+    return Column(
+      children: [
+        TextField(
+          controller: _controller,
+          maxLines: 3,
+          maxLength: 200,
+          decoration: InputDecoration(
+            hintText: "Enter joke...",
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
+          ),
+        ),
+        const SizedBox(height: 10),
+        _buildWriteButton(),
+      ],
+    );
+  }
+
   Widget _buildStatusCard() {
     return Card(
       elevation: 4,
-      // Using your requested Teal/Blue color logic
       color: _isScanning ? Colors.teal[50] : Colors.blue[100],
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Padding(
-        padding: const EdgeInsets.all(25.0),
+        padding: const EdgeInsets.all(20.0),
         child: SizedBox(
           width: double.infinity,
-          child: Text(
-            _jokeDisplay,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-            textAlign: TextAlign.center,
-          ),
+          child: Text(_statusDisplay, style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
         ),
       ),
     );
   }
 
-  Widget _buildReadButton() {
-    return ElevatedButton.icon(
-      onPressed: _isScanning ? null : _readJoke,
-      icon: _isScanning
-          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-          : const Icon(Icons.download),
-      label: Text(_isScanning ? "Looking for joke..." : "Read random joke"),
-      style: ElevatedButton.styleFrom(
-        minimumSize: const Size(double.infinity, 55),
-        foregroundColor: Colors.white,
-        backgroundColor: Colors.blue[900],
+  Widget _buildDebugPanel() {
+    return Container(
+      height: 120,
+      width: double.infinity,
+      color: Colors.grey[900],
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("DEBUG CONSOLE", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 10)),
+          const Divider(color: Colors.green, height: 5),
+          Expanded(
+            child: ListView.builder(
+              itemCount: _debugLogs.length,
+              itemBuilder: (context, i) => Text(_debugLogs[i],
+                  style: const TextStyle(color: Colors.greenAccent, fontSize: 12, fontFamily: 'monospace')),
+            ),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _buildReadButton() {
+    return Column(
+      children: [
+        ElevatedButton.icon(
+          onPressed: _isScanning ? null : _readJoke,
+          icon: Icon(_readStep == 1 ? Icons.send : Icons.download),
+          label: Text(_readStep == 1 ? "Send Request (GET_JOKE)" : "Read Joke"),
+          style: ElevatedButton.styleFrom(
+            minimumSize: const Size(double.infinity, 60),
+            backgroundColor: _readStep == 1 ? Colors.blue[900] : Colors.green[700],
+            foregroundColor: Colors.white,
+          ),
+        ),
+        if (_readStep == 2)
+          Padding(
+            padding: const EdgeInsets.only(top: 8.0),
+            child: TextButton(
+              onPressed: () => setState(() => _readStep = 1),
+              child: const Text("Reset to Step 1"),
+            ),
+          ),
+      ],
     );
   }
 
   Widget _buildWriteButton() {
     return ElevatedButton.icon(
       onPressed: _isScanning ? null : _sendJoke,
-      icon: _isScanning
-          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-          : const Icon(Icons.upload),
-      label: Text(_isScanning ? "Writing..." : "Write through NFC"),
+      icon: const Icon(Icons.upload),
+      label: Text(_isScanning ? "Writing..." : "Save Joke"),
       style: ElevatedButton.styleFrom(
-        backgroundColor: Colors.blue[900],
-        foregroundColor: Colors.white,
-        minimumSize: const Size(double.infinity, 55),
-      ),
+          minimumSize: const Size(double.infinity, 50),
+          backgroundColor: Colors.blue[900],
+          foregroundColor: Colors.white),
     );
   }
 }
