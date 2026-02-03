@@ -69,7 +69,7 @@ class _JokeHomePageState extends State<JokeHomePage> {
     }
 
     if (_readStep == 1) {
-      // --- KROK 1: ODOSLANIE POŽIADAVKY ---
+      // --- STEP 1: SENT REQUEST ---
       setState(() {
         _isScanning = true;
         _statusDisplay = "Step 1: Sending GET_JOKE...";
@@ -90,7 +90,7 @@ class _JokeHomePageState extends State<JokeHomePage> {
 
           if (mounted) {
             setState(() {
-              _readStep = 2; // Zmena na druhý krok
+              _readStep = 2;
               _statusDisplay = "Step 1 Done! Now press physical button, then tap '2. Read Joke'";
             });
           }
@@ -103,7 +103,7 @@ class _JokeHomePageState extends State<JokeHomePage> {
         }
       });
     } else {
-      // --- KROK 2: ČÍTANIE VTIPU ---
+      // --- STEP 2: READ JOKE ---
       setState(() {
         _isScanning = true;
         _statusDisplay = "Step 2: Reading joke...";
@@ -127,7 +127,7 @@ class _JokeHomePageState extends State<JokeHomePage> {
 
             if (mounted) {
               setState(() {
-                _readStep = 1; // Reset späť na prvý krok po úspešnom prečítaní
+                _readStep = 1;
               });
             }
           }
@@ -145,14 +145,12 @@ class _JokeHomePageState extends State<JokeHomePage> {
 
   // --- WRITE FUNCTION (ADD_JOKE) ---
   void _sendJoke() async {
-    // 1. Check if user entered text
     if (_controller.text.trim().isEmpty) {
       _updateStatus("Write a joke first!");
       _addLog("ERROR: Empty text field.");
       return;
     }
 
-    // 2. NEW: Check if NFC hardware is actually ON
     bool isAvailable = await NfcManager.instance.isAvailable();
     if (!isAvailable) {
       _updateStatus("ERROR: Please enable NFC in settings!");
@@ -180,7 +178,6 @@ class _JokeHomePageState extends State<JokeHomePage> {
           return;
         }
 
-        // Apply the prefix Rado's C code expects
         String formattedJoke = "ADD_JOKE:${_controller.text.trim()}";
         _addLog("Writing: $formattedJoke");
 
@@ -237,7 +234,7 @@ class _JokeHomePageState extends State<JokeHomePage> {
                 ],
               ),
             ),
-            _buildDebugPanel(), // Spoločný log panel na spodku
+            // _buildDebugPanel(), // Spoločný log panel na spodku
           ],
         ),
       ),
